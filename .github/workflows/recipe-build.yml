@@ -1,0 +1,66 @@
+name: conan-libodb
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      # - feature/**
+
+jobs:
+  libodb:
+    name: ${{ matrix.target_os }}-${{ matrix.target_arch }} | shared=${{ matrix.shared }}
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shared: [true, false]
+        include:
+          - target_os: linux
+            target_arch: x86_64
+            runs_on: ubuntu-latest
+
+          - target_os: linux
+            target_arch: arm64
+            runs_on: ubuntu-24.04-arm
+
+          - target_os: windows
+            target_arch: x86_64
+            runs_on: windows-latest
+
+          - target_os: windows
+            target_arch: arm64
+            runs_on: windows-11-arm
+
+          - target_os: macos
+            target_arch: x86_64
+            runs_on: macos-13
+
+          - target_os: macos
+            target_arch: arm64
+            runs_on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Conan
+        uses: conan-io/setup-conan@v1
+        with:
+          conan-version: "2.0.17"
+
+      - name: Detect profile
+        run: conan profile detect --force
+
+      - name: Create recipe
+        shell: bash
+        run: |
+          conan create recipes/libodb/all \
+            --version=2.5.0 \
+            -o "libodb/*:shared=${{ matrix.shared }}" \
+            -b missing
