@@ -18,12 +18,10 @@ CMakeUserPresets.json
 # IDEs
 .idea
 .vs
-.vscode
 .project
 .pydevproject
 .settings/
 .ropeproject/
-.devcontainer/
 ## emacs
 *~
 
