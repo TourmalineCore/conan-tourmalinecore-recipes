@@ -3,9 +3,9 @@ import shutil
 import stat
 
 from conan import ConanFile
-from conan.errors import ConanInvalidConfiguration
-from conan.tools.build import build_jobs
-from conan.tools.files import copy, get, rm, rmdir
+from conan.errors import ConanException, ConanInvalidConfiguration
+from conan.tools.build import build_jobs, check_min_cppstd
+from conan.tools.files import copy, get, rm
 from conan.tools.layout import basic_layout
 
 required_conan_version = ">=2.0.9"
@@ -22,7 +22,9 @@ class LibOdbConan(ConanFile):
     homepage = "https://www.codesynthesis.com/products/odb/"
     topics = ("odb", "orm", "database", "c++")
     package_type = "library"
+
     settings = "os", "arch", "compiler", "build_type"
+
     options = {
         "shared": [True, False],
         "fPIC": [True, False],
@@ -31,134 +33,186 @@ class LibOdbConan(ConanFile):
         "shared": False,
         "fPIC": True,
     }
+
     implements = ["auto_shared_fpic"]
 
-    _b2_src  = "build2-toolchain"
+    _b2_src = "build2-toolchain-src"
     _odb_src = "libodb-src"
-    _b_bin   = "b-bin"
+    _b_bin = "b-bin"
 
     def layout(self):
         basic_layout(self, src_folder="src")
 
     def validate(self):
-        if self.settings.os == "Emscripten":
-            raise ConanInvalidConfiguration(f"{self.ref} does not support WASM")
+        if str(self.settings.os) not in ("Windows", "Linux", "Macos"):
+            raise ConanInvalidConfiguration(
+                f"{self.ref} supports only Windows, Linux and macOS"
+            )
+
+        if str(self.settings.arch) not in ("x86_64", "armv8"):
+            raise ConanInvalidConfiguration(
+                f"{self.ref} supports only x86_64 and armv8"
+            )
+
+        if self.settings.get_safe("compiler.cppstd"):
+            check_min_cppstd(self, 11)
 
     def source(self):
         src_data = self.conan_data["sources"][self.version]
-        get(self, **src_data["libodb"], strip_root=True,
-            destination=os.path.join(self.source_folder, self._odb_src))
-        get(self, **src_data["build2_toolchain"], strip_root=True,
-            destination=os.path.join(self.source_folder, self._b2_src))
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
+        get(
+            self,
+            **src_data["libodb"],
+            strip_root=True,
+            destination=self._odb_source_dir,
+        )
 
-    def _b_exe(self):
-        suffix = ".exe" if self.settings.os == "Windows" else ""
-        return os.path.join(self.source_folder, self._b_bin, "bin", f"b{suffix}")
+        get(
+            self,
+            **src_data["build2_toolchain"],
+            strip_root=True,
+            destination=self._build2_source_dir,
+        )
 
-    def _cxx_exe(self):
-        compiler = str(self.settings.compiler)
-        version  = str(self.settings.compiler.version)
-        os_      = str(self.settings.os)
-        if compiler == "msvc":   return "cl"
-        if compiler == "gcc":    return "g++" if os_ == "Windows" else f"g++-{version}"
-        if compiler == "clang":  return f"clang++-{version}"
-        if compiler == "apple-clang": return "clang++"
-        return "c++"
+    @property
+    def _build2_source_dir(self):
+        return os.path.join(self.source_folder, self._b2_src)
+
+    @property
+    def _odb_source_dir(self):
+        return os.path.join(self.source_folder, self._odb_src)
+
+    @property
+    def _build2_bootstrap_dir(self):
+        return os.path.join(self._build2_source_dir, "build2")
+
+    @property
+    def _build2_bin_source_dir(self):
+        # Directory where build2 places b-boot and the final b executable.
+        return os.path.join(self._build2_bootstrap_dir, "build2")
+
+    @property
+    def _build2_bin_b_bin_executable_dir(self):
+        # Local folder where we keep the final usable b executable for the recipe.
+        return os.path.join(self.source_folder, self._b_bin, "bin")
+
+    def _exe_suffix(self):
+        return ".exe" if str(self.settings.os) == "Windows" else ""
 
     def _is_msvc(self):
         return str(self.settings.compiler) == "msvc"
 
-    # ------------------------------------------------------------------
-    # build2 bootstrap: phases 1+2 only, then copy b-boot → b
-    # ------------------------------------------------------------------
+    def _make_executable(self, path):
+        if str(self.settings.os) != "Windows":
+            os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+    def _cxx_executable(self):
+        compiler = str(self.settings.compiler)
+
+        if self._is_msvc():
+            return "cl"
+
+        cxx = os.getenv("CXX")
+        if cxx:
+            return cxx
+
+        if compiler == "gcc":
+            return "g++"
+
+        if compiler in ("clang", "apple-clang"):
+            return "clang++"
+
+        return "c++"
+
+    def _b_executable(self):
+        return os.path.join(self._build2_bin_b_bin_executable_dir, f"b{self._exe_suffix()}")
 
     def _bootstrap_build2(self):
-        b2_src   = os.path.join(self.source_folder, self._b2_src)
-        b2_pkg   = os.path.join(b2_src, "build2")
-        b2_inner = os.path.join(b2_pkg, "build2")
-        exe_sfx  = ".exe" if self.settings.os == "Windows" else ""
-        b_boot   = os.path.join(b2_inner, f"b-boot{exe_sfx}")
-        cxx      = self._cxx_exe()
-        jobs     = build_jobs(self)
+        cxx = self._cxx_executable()
+        b_boot = os.path.join(self._build2_bin_source_dir, f"b-boot{self._exe_suffix()}")
+        b_full = os.path.join(self._build2_bin_source_dir, f"b{self._exe_suffix()}")
 
-        # Phase 1
         if self._is_msvc():
-            self.run(f"bootstrap-msvc.bat {cxx} /w", cwd=b2_pkg)
+            self.run(f"bootstrap-msvc.bat {cxx} /w", cwd=self._build2_bootstrap_dir)
         else:
-            bs = os.path.join(b2_pkg, "bootstrap.sh")
-            os.chmod(bs, os.stat(bs).st_mode | stat.S_IEXEC)
-            self.run(f"./bootstrap.sh {cxx} -w", cwd=b2_pkg)
+            bootstrap = os.path.join(self._build2_bootstrap_dir, "bootstrap.sh")
+            self._make_executable(bootstrap)
+            self.run(f"./bootstrap.sh {cxx} -w", cwd=self._build2_bootstrap_dir)
 
-        # Phase 2: rebuild b-boot statically with full build2 logic
         self.run(
-            f"{b_boot} config.cxx={cxx} config.bin.lib=static build2/exe{{b}}",
-            cwd=b2_pkg,
+            f'"{b_boot}" config.cxx={cxx} config.bin.lib=static build2/exe{{b}}',
+            cwd=self._build2_bootstrap_dir,
         )
-        os.replace(os.path.join(b2_inner, f"b{exe_sfx}"), b_boot)
 
-        # Phase 3: copy b-boot → b-bin/bin/b[.exe]
-        b_bin_dir = os.path.join(self.source_folder, self._b_bin, "bin")
-        os.makedirs(b_bin_dir, exist_ok=True)
-        b_final = os.path.join(b_bin_dir, f"b{exe_sfx}")
-        shutil.copy2(b_boot, b_final)
-        if self.settings.os != "Windows":
-            os.chmod(b_final, os.stat(b_final).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        if not os.path.isfile(b_full):
+            raise ConanException(
+                "build2 bootstrap failed: final 'b' executable was not created"
+            )
 
-    # ------------------------------------------------------------------
-    # Conan lifecycle
-    # ------------------------------------------------------------------
+        os.makedirs(self._build2_bin_b_bin_executable_dir, exist_ok=True)
+        b_final = self._b_executable()
+        shutil.copy2(b_full, b_final)
+        self._make_executable(b_final)
+
+    def _build_args(self):
+        args = []
+        jobs = build_jobs(self)
+        debug = str(self.settings.build_type) in ("Debug", "RelWithDebInfo")
+
+        if jobs > 1:
+            args.append(f"-j {jobs}")
+
+        args.extend(
+            [
+                f"config.cxx={self._cxx_executable()}",
+                "config.cxx.std=c++11",
+                f"config.bin.debug={'true' if debug else 'false'}",
+                f"config.bin.lib={'shared' if self.options.shared else 'static'}",
+            ]
+        )
+
+        if not self.options.shared and self.options.get_safe("fPIC") and not self._is_msvc():
+            args.append("config.cc.coptions+=-fPIC")
+
+        return args
 
     def build(self):
         self._bootstrap_build2()
 
-        b     = self._b_exe()
-        cxx   = self._cxx_exe()
-        jobs  = build_jobs(self)
-        debug = self.settings.build_type in ("Debug", "RelWithDebInfo")
-        odb_src = os.path.join(self.source_folder, self._odb_src)
+        args = " ".join(self._build_args())
+        self.run(f'"{self._b_executable()}" {args} ./odb/', cwd=self._odb_source_dir)
 
-        # Build into a local output directory, then copy in package().
-        # This avoids build2's install rule entirely — it cannot create
-        # intermediate directories on Windows.
-        out = os.path.join(self.build_folder, "out")
+    def _copy_headers(self):
+        src = os.path.join(self._odb_source_dir, "odb")
+        dst = os.path.join(self.package_folder, "include", "odb")
 
-        args = [
-            f"config.cxx={cxx}",
-            "config.cxx.std=c++11",
-            f"config.bin.debug={'true' if debug else 'false'}",
-            f"config.bin.lib={'shared' if self.options.shared else 'static'}",
-        ]
-        if not self.options.shared and self.options.get_safe("fPIC") and not self._is_msvc():
-            args.append("config.cc.coptions+=-fPIC")
-        if jobs > 1:
-            args.insert(0, f"-j {jobs}")
+        for pattern in ("*.hxx", "*.ixx", "*.txx", "*.h"):
+            copy(self, pattern, src, dst)
 
-        # Build only the library (skip tests)
-        self.run(f'"{b}" ' + " ".join(args) + " ./odb/", cwd=odb_src)
+    def _copy_libraries(self):
+        lib_dir = os.path.join(self.package_folder, "lib")
+        bin_dir = os.path.join(self.package_folder, "bin")
+
+        if self.options.shared:
+            copy(self, "*.dll", self._odb_source_dir, bin_dir, keep_path=False)
+            copy(self, "*.so*", self._odb_source_dir, lib_dir, keep_path=False)
+            copy(self, "*.dylib", self._odb_source_dir, lib_dir, keep_path=False)
+            copy(self, "*.lib", self._odb_source_dir, lib_dir, keep_path=False)
+        else:
+            copy(self, "*.a", self._odb_source_dir, lib_dir, keep_path=False)
+            copy(self, "*.lib", self._odb_source_dir, lib_dir, keep_path=False)
 
     def package(self):
-        odb_src = os.path.join(self.source_folder, self._odb_src)
+        self._copy_headers()
+        self._copy_libraries()
 
-        # Headers (including .h files such as details/config-vc.h)
-        for pat in ("*.hxx", "*.ixx", "*.txx", "*.h"):
-            copy(self, pat, os.path.join(odb_src, "odb"),
-                 os.path.join(self.package_folder, "include", "odb"))
-
-        # Build artifacts: libs live in odb/ subdir of source after build
-        if self.options.shared:
-            copy(self, "*.dll", odb_src, os.path.join(self.package_folder, "bin"), keep_path=False)
-            copy(self, "*.so*", odb_src, os.path.join(self.package_folder, "lib"), keep_path=False)
-            copy(self, "*.dylib", odb_src, os.path.join(self.package_folder, "lib"), keep_path=False)
-            copy(self, "*.lib", odb_src, os.path.join(self.package_folder, "lib"), keep_path=False)
-        else:
-            copy(self, "*.lib", odb_src, os.path.join(self.package_folder, "lib"), keep_path=False)
-            copy(self, "*.a",   odb_src, os.path.join(self.package_folder, "lib"), keep_path=False)
-
-        copy(self, "LICENSE", odb_src, os.path.join(self.package_folder, "licenses"))
+        copy(
+            self,
+            "LICENSE",
+            self._odb_source_dir,
+            os.path.join(self.package_folder, "licenses"),
+            keep_path=False,
+        )
         rm(self, "*.pdb", self.package_folder, recursive=True)
 
     def package_info(self):
@@ -169,7 +223,9 @@ class LibOdbConan(ConanFile):
 
         if not self.options.shared:
             self.cpp_info.defines.append("LIBODB_STATIC")
-        if self.settings.os in ["Linux", "FreeBSD"]:
+
+        if str(self.settings.os) == "Linux":
             self.cpp_info.system_libs.append("pthread")
-        if self.settings.os == "Windows":
+
+        if str(self.settings.os) == "Windows":
             self.cpp_info.system_libs.append("ws2_32")
