@@ -46,6 +46,8 @@ System requirements:
 
 Run `conan profile detect` and then `conan create recipes/libodb/all --version=2.5.0 -b missing`.
 
+> To cleanup previous ones builds need to run `conan remove "libodb/*" -c` command.
+
 ## Known issues
 
 #### Stuck in `libname/X.Y.Z: Calling source() in C:\Users\user\.conan2\p\libname************\s\src`.
