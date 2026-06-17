@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target_os: [linux, windows, macos]
+        target_os: [windows]
         target_arch: [x86_64, arm64]
         shared: ['True', 'False']
         include:
