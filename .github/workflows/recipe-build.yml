@@ -18,29 +18,29 @@ jobs:
         target_arch: [x86_64, arm64]
         shared: ['True', 'False']
         include:
-          - target_os: linux
-            target_arch: x86_64
-            runs_on: ubuntu-24.04
+          # - target_os: linux
+          #   target_arch: x86_64
+          #   runs_on: ubuntu-24.04
 
-          - target_os: linux
-            target_arch: arm64
-            runs_on: ubuntu-24.04-arm
-
-          - target_os: windows
-            target_arch: x86_64
-            runs_on: windows-2025
+          # - target_os: linux
+          #   target_arch: arm64
+          #   runs_on: ubuntu-24.04-arm
 
           - target_os: windows
-            target_arch: arm64
-            runs_on: windows-11-arm
-
-          - target_os: macos
             target_arch: x86_64
-            runs_on: macos-26-intel
+            runs_on: windows-2025-vs2026
 
-          - target_os: macos
+          - target_os: windows
             target_arch: arm64
-            runs_on: macos-26
+            runs_on: windows-11-vs2026-arm
+
+          # - target_os: macos
+          #   target_arch: x86_64
+          #   runs_on: macos-26-intel
+
+          # - target_os: macos
+          #   target_arch: arm64
+          #   runs_on: macos-26
 
     steps:
       - name: Checkout
