@@ -5,7 +5,7 @@ on:
   push:
     branches:
       - master
-      # - feature/**
+      - feature/**
 
 jobs:
   libodb:

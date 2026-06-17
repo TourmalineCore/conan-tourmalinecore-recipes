@@ -88,12 +88,10 @@ class LibOdbConan(ConanFile):
 
     @property
     def _build2_bin_source_dir(self):
-        # Directory where build2 places b-boot and the final b executable.
         return os.path.join(self._build2_bootstrap_dir, "build2")
 
     @property
     def _build2_bin_b_bin_executable_dir(self):
-        # Local folder where we keep the final usable b executable for the recipe.
         return os.path.join(self.source_folder, self._b_bin, "bin")
 
     def _exe_suffix(self):
