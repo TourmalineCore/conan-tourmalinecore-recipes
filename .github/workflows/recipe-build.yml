@@ -16,7 +16,7 @@ jobs:
       matrix:
         target_os: [linux, windows, macos]
         target_arch: [x86_64, arm64]
-        shared: [True, False]
+        shared: ['True', 'False']
         include:
           - target_os: linux
             target_arch: x86_64
