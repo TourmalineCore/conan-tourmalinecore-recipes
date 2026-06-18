@@ -14,17 +14,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target_os: [windows]
+        target_os: [linux, windows, macos]
         target_arch: [x86_64, arm64]
         shared: ['True', 'False']
         include:
-          # - target_os: linux
-          #   target_arch: x86_64
-          #   runs_on: ubuntu-24.04
+          - target_os: linux
+            target_arch: x86_64
+            runs_on: ubuntu-24.04
 
-          # - target_os: linux
-          #   target_arch: arm64
-          #   runs_on: ubuntu-24.04-arm
+          - target_os: linux
+            target_arch: arm64
+            runs_on: ubuntu-24.04-arm
 
           - target_os: windows
             target_arch: x86_64
@@ -36,13 +36,13 @@ jobs:
             runs_on: windows-11-vs2026-arm
             msvc_arch: arm64
 
-          # - target_os: macos
-          #   target_arch: x86_64
-          #   runs_on: macos-26-intel
+          - target_os: macos
+            target_arch: x86_64
+            runs_on: macos-26-intel
 
-          # - target_os: macos
-          #   target_arch: arm64
-          #   runs_on: macos-26
+          - target_os: macos
+            target_arch: arm64
+            runs_on: macos-26
 
     steps:
       - name: Checkout
