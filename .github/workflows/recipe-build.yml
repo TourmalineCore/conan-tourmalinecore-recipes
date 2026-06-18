@@ -56,10 +56,34 @@ jobs:
         with:
           conan-version: "2.0.17"
 
+      - name: Setup MSVC developer shell
+        if: matrix.target_os == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.target_arch == 'arm64' && 'amd64_arm64' || 'amd64' }}
+
       - name: Detect profile
         run: conan profile detect --force
 
-      - name: Create recipe
+      - name: Check Windows toolchain
+        if: matrix.target_os == 'windows'
+        shell: pwsh
+        run: |
+          cl
+          cmake --version
+          conan --version
+
+      - name: Create recipe on Windows
+        if: matrix.target_os == 'windows'
+        shell: pwsh
+        run: |
+          conan create recipes/libodb/all `
+            --version=2.5.0 `
+            -o "libodb/*:shared=${{ matrix.shared }}" `
+            -b missing
+
+      - name: Create recipe on Linux/macOS
+        if: matrix.target_os != 'windows'
         shell: bash
         run: |
           conan create recipes/libodb/all \
