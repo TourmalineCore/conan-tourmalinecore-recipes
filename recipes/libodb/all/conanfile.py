@@ -97,58 +97,96 @@ class LibOdbConan(ConanFile):
     def _exe_suffix(self):
         return ".exe" if str(self.settings.os) == "Windows" else ""
 
+
+    def _b_exe(self):
+        return os.path.join(self.source_folder, self._b_bin, "bin", f"b{self._exe_suffix()}")
+
+
+    def _cxx_exe(self):
+        compiler = str(self.settings.compiler)
+        version = str(self.settings.compiler.version)
+        os_ = str(self.settings.os)
+
+        if compiler == "msvc":
+            return "cl"
+        if compiler == "gcc":
+            return "g++" if os_ == "Windows" else f"g++-{version}"
+        if compiler == "clang":
+            return f"clang++-{version}"
+        if compiler == "apple-clang":
+            return "clang++"
+        return "c++"
+
+
     def _is_msvc(self):
         return str(self.settings.compiler) == "msvc"
+
+
+    def _find_first_existing(self, candidates):
+        for path in candidates:
+            if os.path.isfile(path):
+                return path
+        return None
+
 
     def _make_executable(self, path):
         if str(self.settings.os) != "Windows":
             os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
-    def _cxx_executable(self):
-        compiler = str(self.settings.compiler)
-
-        if self._is_msvc():
-            return "cl"
-
-        cxx = os.getenv("CXX")
-        if cxx:
-            return cxx
-
-        if compiler == "gcc":
-            return "g++"
-
-        if compiler in ("clang", "apple-clang"):
-            return "clang++"
-
-        return "c++"
-
-    def _b_executable(self):
-        return os.path.join(self._build2_bin_b_bin_executable_dir, f"b{self._exe_suffix()}")
 
     def _bootstrap_build2(self):
-        cxx = self._cxx_executable()
-        b_boot = os.path.join(self._build2_bin_source_dir, f"b-boot{self._exe_suffix()}")
-        b_full = os.path.join(self._build2_bin_source_dir, f"b{self._exe_suffix()}")
+        b2_src = os.path.join(self.source_folder, self._b2_src)
+        b2_pkg = os.path.join(b2_src, "build2")
+        exe_sfx = self._exe_suffix()
+        cxx = self._cxx_exe()
 
         if self._is_msvc():
-            self.run(f"bootstrap-msvc.bat {cxx} /w", cwd=self._build2_bootstrap_dir)
+            self.run(f"bootstrap-msvc.bat {cxx} /w", cwd=b2_pkg)
         else:
-            bootstrap = os.path.join(self._build2_bootstrap_dir, "bootstrap.sh")
-            self._make_executable(bootstrap)
-            self.run(f"./bootstrap.sh {cxx} -w", cwd=self._build2_bootstrap_dir)
+            bs = os.path.join(b2_pkg, "bootstrap.sh")
+            self._make_executable(bs)
+            self.run(f"./bootstrap.sh {cxx} -w", cwd=b2_pkg)
 
-        self.run(
-            f'"{b_boot}" config.cxx={cxx} config.bin.lib=static build2/exe{{b}}',
-            cwd=self._build2_bootstrap_dir,
-        )
+        old_boot = os.path.join(b2_pkg, "build2", f"b-boot{exe_sfx}")
+        new_boot = os.path.join(b2_pkg, "b", f"b-boot{exe_sfx}")
 
-        if not os.path.isfile(b_full):
-            raise ConanException(
-                "build2 bootstrap failed: final 'b' executable was not created"
+        b_boot = self._find_first_existing([old_boot, new_boot])
+        if not b_boot:
+            raise ConanInvalidConfiguration(
+                f"Could not find build2 bootstrap executable after phase 1 in {b2_pkg}"
             )
 
-        os.makedirs(self._build2_bin_b_bin_executable_dir, exist_ok=True)
-        b_final = self._b_executable()
+        if b_boot == new_boot:
+            b_target = "b/exe{b}"
+            b_full_candidates = [
+                os.path.join(b2_pkg, "b", f"b{exe_sfx}"),
+            ]
+        else:
+            b_target = "build2/exe{b}"
+            b_full_candidates = [
+                os.path.join(b2_pkg, "build2", f"b{exe_sfx}"),
+            ]
+
+        self.output.info(f"Using build2 bootstrap executable: {b_boot}")
+        self.output.info(f"Using build2 rebuild target: {b_target}")
+
+        self.run(
+            f'"{b_boot}" config.cxx={cxx} config.bin.lib=static {b_target}',
+            cwd=b2_pkg,
+        )
+
+        b_full = self._find_first_existing(b_full_candidates)
+        if not b_full:
+            raise ConanInvalidConfiguration(
+                f"Could not find final build2 executable after phase 2 in {b2_pkg}"
+            )
+
+        self.output.info(f"Using final build2 executable: {b_full}")
+
+        b_bin_dir = os.path.join(self.source_folder, self._b_bin, "bin")
+        os.makedirs(b_bin_dir, exist_ok=True)
+
+        b_final = os.path.join(b_bin_dir, f"b{exe_sfx}")
         shutil.copy2(b_full, b_final)
         self._make_executable(b_final)
 
@@ -162,7 +200,7 @@ class LibOdbConan(ConanFile):
 
         args.extend(
             [
-                f"config.cxx={self._cxx_executable()}",
+                f"config.cxx={self._cxx_exe()}",
                 "config.cxx.std=c++11",
                 f"config.bin.debug={'true' if debug else 'false'}",
                 f"config.bin.lib={'shared' if self.options.shared else 'static'}",
@@ -178,7 +216,7 @@ class LibOdbConan(ConanFile):
         self._bootstrap_build2()
 
         args = " ".join(self._build_args())
-        self.run(f'"{self._b_executable()}" {args} ./odb/', cwd=self._odb_source_dir)
+        self.run(f'"{self._b_exe()}" {args} ./odb/', cwd=self._odb_source_dir)
 
     def _copy_headers(self):
         src = os.path.join(self._odb_source_dir, "odb")
