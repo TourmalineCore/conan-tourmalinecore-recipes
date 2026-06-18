@@ -29,10 +29,12 @@ jobs:
           - target_os: windows
             target_arch: x86_64
             runs_on: windows-2025-vs2026
+            msvc_arch: amd64
 
           - target_os: windows
             target_arch: arm64
             runs_on: windows-11-vs2026-arm
+            msvc_arch: arm64
 
           # - target_os: macos
           #   target_arch: x86_64
@@ -60,7 +62,7 @@ jobs:
         if: matrix.target_os == 'windows'
         uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: ${{ matrix.target_arch == 'arm64' && 'amd64_arm64' || 'amd64' }}
+          arch: ${{ matrix.msvc_arch }}
 
       - name: Detect profile
         run: conan profile detect --force
