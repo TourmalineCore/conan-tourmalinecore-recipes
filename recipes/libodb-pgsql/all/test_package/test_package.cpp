@@ -1,8 +1,3 @@
-// Minimal smoke test for libodb-pgsql:
-//   - pgsql backend headers are discoverable
-//   - PostgreSQL traits and basic types are accessible
-//   - library links correctly (including libpq symbols)
-
 #include <odb/pgsql/version.hxx>
 #include <odb/pgsql/traits.hxx>
 #include <odb/pgsql/database.hxx>
