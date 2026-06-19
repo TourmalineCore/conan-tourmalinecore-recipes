@@ -1,12 +1,14 @@
+import glob
 import os
 import shutil
 import stat
 
 from conan import ConanFile
 from conan.errors import ConanInvalidConfiguration
-from conan.tools.build import build_jobs, check_min_cppstd
+from conan.tools.build import build_jobs
 from conan.tools.files import copy, get, rm
 from conan.tools.layout import basic_layout
+
 
 required_conan_version = ">=2.0.9"
 
@@ -24,7 +26,6 @@ class LibOdbPgsqlConan(ConanFile):
     package_type = "library"
 
     settings = "os", "arch", "compiler", "build_type"
-
     options = {
         "shared": [True, False],
         "fPIC": [True, False],
@@ -43,6 +44,10 @@ class LibOdbPgsqlConan(ConanFile):
     def layout(self):
         basic_layout(self, src_folder="src")
 
+    def configure(self):
+        self.options["libodb"].shared = self.options.shared
+        self.options["libpq"].shared = self.options.shared
+
     def requirements(self):
         self.requires("libodb/2.5.0", transitive_headers=True, transitive_libs=True)
         self.requires("libpq/[>=14 <17]", transitive_headers=True, transitive_libs=True)
@@ -56,8 +61,6 @@ class LibOdbPgsqlConan(ConanFile):
             raise ConanInvalidConfiguration(
                 f"{self.ref} supports only x86_64 and armv8"
             )
-        if self.settings.get_safe("compiler.cppstd"):
-            check_min_cppstd(self, 11)
 
     def source(self):
         src_data = self.conan_data["sources"][self.version]
@@ -82,14 +85,6 @@ class LibOdbPgsqlConan(ConanFile):
     @property
     def _pgsql_source_dir(self):
         return os.path.join(self.source_folder, self._pgsql_src)
-
-    @property
-    def _build2_bootstrap_dir(self):
-        return os.path.join(self._build2_source_dir, "build2")
-
-    @property
-    def _build2_bin_b_bin_executable_dir(self):
-        return os.path.join(self.source_folder, self._b_bin, "bin")
 
     def _exe_suffix(self):
         return ".exe" if str(self.settings.os) == "Windows" else ""
@@ -125,13 +120,10 @@ class LibOdbPgsqlConan(ConanFile):
 
     def _make_executable(self, path):
         if str(self.settings.os) != "Windows":
-            os.chmod(
-                path,
-                os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH,
-            )
+            os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
     def _bootstrap_build2(self):
-        b2_pkg = self._build2_bootstrap_dir
+        b2_pkg = os.path.join(self._build2_source_dir, "build2")
         exe_sfx = self._exe_suffix()
         cxx = self._cxx_exe()
 
@@ -153,17 +145,10 @@ class LibOdbPgsqlConan(ConanFile):
 
         if b_boot == new_boot:
             b_target = "b/exe{b}"
-            b_full_candidates = [
-                os.path.join(b2_pkg, "b", f"b{exe_sfx}"),
-            ]
+            b_full_candidates = [os.path.join(b2_pkg, "b", f"b{exe_sfx}")]
         else:
             b_target = "build2/exe{b}"
-            b_full_candidates = [
-                os.path.join(b2_pkg, "build2", f"b{exe_sfx}"),
-            ]
-
-        self.output.info(f"Using build2 bootstrap executable: {b_boot}")
-        self.output.info(f"Using build2 rebuild target: {b_target}")
+            b_full_candidates = [os.path.join(b2_pkg, "build2", f"b{exe_sfx}")]
 
         self.run(
             f'"{b_boot}" config.cxx={cxx} config.bin.lib=static {b_target}',
@@ -176,20 +161,23 @@ class LibOdbPgsqlConan(ConanFile):
                 f"Could not find final build2 executable after phase 2 in {b2_pkg}"
             )
 
-        self.output.info(f"Using final build2 executable: {b_full}")
+        b_bin_dir = os.path.join(self.source_folder, self._b_bin, "bin")
+        os.makedirs(b_bin_dir, exist_ok=True)
 
-        os.makedirs(self._build2_bin_b_bin_executable_dir, exist_ok=True)
-        b_final = os.path.join(
-            self._build2_bin_b_bin_executable_dir, f"b{exe_sfx}"
-        )
+        b_final = os.path.join(b_bin_dir, f"b{exe_sfx}")
         shutil.copy2(b_full, b_final)
         self._make_executable(b_final)
 
-    def _dep_dirs(self, name):
-        info = self.dependencies[name].cpp_info.aggregated_components()
-        include_dir = info.includedirs[0].replace("\\", "/")
-        lib_dir = info.libdirs[0].replace("\\", "/")
-        return include_dir, lib_dir
+    def _dep_info(self, name):
+        return self.dependencies[name].cpp_info.aggregated_components()
+
+    def _dep_include_dir(self, name):
+        info = self._dep_info(name)
+        return info.includedirs[0].replace("\\", "/")
+
+    def _dep_lib_dir(self, name):
+        info = self._dep_info(name)
+        return info.libdirs[0].replace("\\", "/")
 
     def _cc_flag(self, flag_type, value):
         if self._is_msvc():
@@ -200,16 +188,56 @@ class LibOdbPgsqlConan(ConanFile):
         key = "config.cc.poptions" if flag_type == "include" else "config.cc.loptions"
         return f"{key}+={flag}"
 
+    def _stage_shared_dep_libs(self, name):
+        info = self._dep_info(name)
+        stage_dir = os.path.join(self.build_folder, "dep-link", name)
+        os.makedirs(stage_dir, exist_ok=True)
+
+        wanted = [lib.lower() for lib in info.libs]
+        os_ = str(self.settings.os)
+
+        if os_ == "Windows":
+            patterns = ["*.dll.lib", "*.lib"]
+        elif os_ == "Macos":
+            patterns = ["*.dylib"]
+        else:
+            patterns = ["*.so", "*.so.*"]
+
+        copied = []
+        for libdir in info.libdirs:
+            for pattern in patterns:
+                for src in glob.glob(os.path.join(libdir, pattern)):
+                    base = os.path.basename(src).lower()
+                    if wanted and not any(w in base for w in wanted):
+                        continue
+                    dst = os.path.join(stage_dir, os.path.basename(src))
+                    shutil.copy2(src, dst)
+                    copied.append(dst)
+
+        if not copied:
+            raise ConanInvalidConfiguration(
+                f"Could not find shared library artifacts for dependency '{name}'"
+            )
+
+        return stage_dir.replace("\\", "/")
+
+    def _link_libdir(self, name):
+        if self.options.shared and str(self.settings.os) in ("Windows", "Macos"):
+            return self._stage_shared_dep_libs(name)
+        return self._dep_lib_dir(name)
+
     def _build_args(self):
         args = []
         jobs = build_jobs(self)
         debug = str(self.settings.build_type) in ("Debug", "RelWithDebInfo")
 
-        odb_inc, odb_lib = self._dep_dirs("libodb")
-        pgsql_inc, pgsql_lib = self._dep_dirs("libpq")
-
         if jobs > 1:
             args.append(f"-j {jobs}")
+
+        odb_inc = self._dep_include_dir("libodb")
+        pgsql_inc = self._dep_include_dir("libpq")
+        odb_lib = self._link_libdir("libodb")
+        pgsql_lib = self._link_libdir("libpq")
 
         args.extend([
             f"config.cxx={self._cxx_exe()}",
