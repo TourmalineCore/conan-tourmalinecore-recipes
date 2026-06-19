@@ -4,8 +4,8 @@ import stat
 
 from conan import ConanFile
 from conan.errors import ConanInvalidConfiguration
-from conan.tools.build import build_jobs
-from conan.tools.files import copy, get, rm, rmdir
+from conan.tools.build import build_jobs, check_min_cppstd
+from conan.tools.files import copy, get, rm
 from conan.tools.layout import basic_layout
 
 required_conan_version = ">=2.0.9"
@@ -22,7 +22,9 @@ class LibOdbPgsqlConan(ConanFile):
     homepage = "https://www.codesynthesis.com/products/odb/"
     topics = ("odb", "orm", "postgresql", "pgsql", "database", "c++")
     package_type = "library"
+
     settings = "os", "arch", "compiler", "build_type"
+
     options = {
         "shared": [True, False],
         "fPIC": [True, False],
@@ -31,11 +33,12 @@ class LibOdbPgsqlConan(ConanFile):
         "shared": False,
         "fPIC": True,
     }
+
     implements = ["auto_shared_fpic"]
 
-    _b2_src    = "build2-toolchain"
+    _b2_src = "build2-toolchain-src"
     _pgsql_src = "libodb-pgsql-src"
-    _b_bin     = "b-bin"
+    _b_bin = "b-bin"
 
     def layout(self):
         basic_layout(self, src_folder="src")
@@ -45,143 +48,171 @@ class LibOdbPgsqlConan(ConanFile):
         self.requires("libpq/[>=14 <17]", transitive_headers=True, transitive_libs=True)
 
     def validate(self):
-        if self.settings.os == "Emscripten":
-            raise ConanInvalidConfiguration(f"{self.ref} does not support WASM")
+        if str(self.settings.os) not in ("Windows", "Linux", "Macos"):
+            raise ConanInvalidConfiguration(
+                f"{self.ref} supports only Windows, Linux and macOS"
+            )
+        if str(self.settings.arch) not in ("x86_64", "armv8"):
+            raise ConanInvalidConfiguration(
+                f"{self.ref} supports only x86_64 and armv8"
+            )
+        if self.settings.get_safe("compiler.cppstd"):
+            check_min_cppstd(self, 11)
 
     def source(self):
         src_data = self.conan_data["sources"][self.version]
-        get(self, **src_data["libodb_pgsql"], strip_root=True,
-            destination=os.path.join(self.source_folder, self._pgsql_src))
-        get(self, **src_data["build2_toolchain"], strip_root=True,
-            destination=os.path.join(self.source_folder, self._b2_src))
 
-    # ------------------------------------------------------------------
-    # Helpers  (identical to libodb recipe)
-    # ------------------------------------------------------------------
+        get(
+            self,
+            **src_data["libodb_pgsql"],
+            strip_root=True,
+            destination=self._pgsql_source_dir,
+        )
+        get(
+            self,
+            **src_data["build2_toolchain"],
+            strip_root=True,
+            destination=self._build2_source_dir,
+        )
+
+    @property
+    def _build2_source_dir(self):
+        return os.path.join(self.source_folder, self._b2_src)
+
+    @property
+    def _pgsql_source_dir(self):
+        return os.path.join(self.source_folder, self._pgsql_src)
+
+    @property
+    def _build2_bootstrap_dir(self):
+        return os.path.join(self._build2_source_dir, "build2")
+
+    @property
+    def _build2_bin_b_bin_executable_dir(self):
+        return os.path.join(self.source_folder, self._b_bin, "bin")
+
+    def _exe_suffix(self):
+        return ".exe" if str(self.settings.os) == "Windows" else ""
 
     def _b_exe(self):
-        suffix = ".exe" if self.settings.os == "Windows" else ""
-        return os.path.join(self.source_folder, self._b_bin, "bin", f"b{suffix}")
+        return os.path.join(
+            self.source_folder, self._b_bin, "bin", f"b{self._exe_suffix()}"
+        )
 
     def _cxx_exe(self):
         compiler = str(self.settings.compiler)
-        version  = str(self.settings.compiler.version)
-        os_      = str(self.settings.os)
+        version = str(self.settings.compiler.version)
+        os_ = str(self.settings.os)
+
         if compiler == "msvc":
             return "cl"
-        elif compiler == "gcc":
+        if compiler == "gcc":
             return "g++" if os_ == "Windows" else f"g++-{version}"
-        elif compiler == "clang":
+        if compiler == "clang":
             return f"clang++-{version}"
-        elif compiler == "apple-clang":
+        if compiler == "apple-clang":
             return "clang++"
         return "c++"
 
     def _is_msvc(self):
         return str(self.settings.compiler) == "msvc"
 
-    # ------------------------------------------------------------------
-    # build2 bootstrap  (identical procedure to libodb recipe)
-    # ------------------------------------------------------------------
+    def _find_first_existing(self, candidates):
+        for path in candidates:
+            if os.path.isfile(path):
+                return path
+        return None
+
+    def _make_executable(self, path):
+        if str(self.settings.os) != "Windows":
+            os.chmod(
+                path,
+                os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH,
+            )
 
     def _bootstrap_build2(self):
-        """
-        Bootstrap build2 `b` from the official release tarball.
-        See libodb recipe for full layout commentary.
+        b2_pkg = self._build2_bootstrap_dir
+        exe_sfx = self._exe_suffix()
+        cxx = self._cxx_exe()
 
-        Tarball layout (strip_root=True into b2_src):
-            b2_src/build2/              ← b2_pkg
-                bootstrap.sh / bootstrap-msvc.bat
-                build2/                 ← b2_inner (compiler sources)
-                    b-boot[.exe]        ← phase-1/2 output
-
-        Phase 1:  CWD=b2_pkg   → build2/b-boot[.exe]
-        Phase 2:  CWD=b2_pkg   → build2/b[.exe]  → renamed to build2/b-boot[.exe]
-        Phase 3:  CWD=b2_src   → build2/build2/b-boot[.exe] configure + install
-        """
-        b2_src   = os.path.join(self.source_folder, self._b2_src)
-        b2_pkg   = os.path.join(b2_src, "build2")
-        b2_inner = os.path.join(b2_pkg, "build2")
-        exe_sfx  = ".exe" if self.settings.os == "Windows" else ""
-        b_boot   = os.path.join(b2_inner, f"b-boot{exe_sfx}")
-        b_bin    = os.path.join(self.source_folder, self._b_bin)
-        cxx      = self._cxx_exe()
-        jobs     = build_jobs(self)
-
-        # Phase 1
         if self._is_msvc():
             self.run(f"bootstrap-msvc.bat {cxx} /w", cwd=b2_pkg)
         else:
             bs = os.path.join(b2_pkg, "bootstrap.sh")
-            os.chmod(bs, os.stat(bs).st_mode | stat.S_IEXEC)
+            self._make_executable(bs)
             self.run(f"./bootstrap.sh {cxx} -w", cwd=b2_pkg)
 
-        # Phase 2: rebuild b-boot with full build2 logic (static linkage)
+        old_boot = os.path.join(b2_pkg, "build2", f"b-boot{exe_sfx}")
+        new_boot = os.path.join(b2_pkg, "b", f"b-boot{exe_sfx}")
+
+        b_boot = self._find_first_existing([old_boot, new_boot])
+        if not b_boot:
+            raise ConanInvalidConfiguration(
+                f"Could not find build2 bootstrap executable after phase 1 in {b2_pkg}"
+            )
+
+        if b_boot == new_boot:
+            b_target = "b/exe{b}"
+            b_full_candidates = [
+                os.path.join(b2_pkg, "b", f"b{exe_sfx}"),
+            ]
+        else:
+            b_target = "build2/exe{b}"
+            b_full_candidates = [
+                os.path.join(b2_pkg, "build2", f"b{exe_sfx}"),
+            ]
+
+        self.output.info(f"Using build2 bootstrap executable: {b_boot}")
+        self.output.info(f"Using build2 rebuild target: {b_target}")
+
         self.run(
-            f"{b_boot} config.cxx={cxx} config.bin.lib=static build2/exe{{b}}",
+            f'"{b_boot}" config.cxx={cxx} config.bin.lib=static {b_target}',
             cwd=b2_pkg,
         )
-        os.replace(os.path.join(b2_inner, f"b{exe_sfx}"), b_boot)
 
-        # Phase 3: copy b-boot → b-bin/bin/b[.exe]
-        # b-boot after Phase 2 is a fully-featured statically-linked b driver.
-        # We avoid `b install:` because it tries to install the entire toolchain
-        # (headers, docs, man pages) and fails on Windows when directories
-        # don't pre-exist. A simple copy is sufficient.
-        b_bin_dir = os.path.join(b_bin, "bin")
-        os.makedirs(b_bin_dir, exist_ok=True)
-        b_final = os.path.join(b_bin_dir, f"b{exe_sfx}")
-        shutil.copy2(b_boot, b_final)
-        if self.settings.os != "Windows":
-            os.chmod(b_final, os.stat(b_final).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-        self.output.info(f"build2 `b` ready at: {b_final}")
+        b_full = self._find_first_existing(b_full_candidates)
+        if not b_full:
+            raise ConanInvalidConfiguration(
+                f"Could not find final build2 executable after phase 2 in {b2_pkg}"
+            )
 
-    # ------------------------------------------------------------------
-    # Dependency path helpers
-    # ------------------------------------------------------------------
+        self.output.info(f"Using final build2 executable: {b_full}")
+
+        os.makedirs(self._build2_bin_b_bin_executable_dir, exist_ok=True)
+        b_final = os.path.join(
+            self._build2_bin_b_bin_executable_dir, f"b{exe_sfx}"
+        )
+        shutil.copy2(b_full, b_final)
+        self._make_executable(b_final)
 
     def _dep_dirs(self, name):
-        """
-        Return (include_dir, lib_dir) with forward slashes, single-quoted
-        so build2's argument parser handles paths that contain spaces.
-        """
         info = self.dependencies[name].cpp_info.aggregated_components()
-        inc  = info.includedirs[0].replace("\\", "/")
-        lib  = info.libdirs[0].replace("\\", "/")
-        return inc, lib
+        include_dir = info.includedirs[0].replace("\\", "/")
+        lib_dir = info.libdirs[0].replace("\\", "/")
+        return include_dir, lib_dir
 
     def _cc_flag(self, flag_type, value):
-        """
-        Build a build2 config assignment for a compiler/linker flag.
-        No shell quoting — build2 is invoked directly (not via shell on Windows),
-        so single/double quotes would be passed literally.
-        Conan cache paths never contain spaces, so quoting is unnecessary.
-        """
         if self._is_msvc():
             flag = f"/I{value}" if flag_type == "include" else f"/LIBPATH:{value}"
-            key  = "config.cc.poptions" if flag_type == "include" else "config.cc.loptions"
         else:
             flag = f"-I{value}" if flag_type == "include" else f"-L{value}"
-            key  = "config.cc.poptions" if flag_type == "include" else "config.cc.loptions"
+
+        key = "config.cc.poptions" if flag_type == "include" else "config.cc.loptions"
         return f"{key}+={flag}"
 
-    # ------------------------------------------------------------------
-    # Conan lifecycle
-    # ------------------------------------------------------------------
+    def _build_args(self):
+        args = []
+        jobs = build_jobs(self)
+        debug = str(self.settings.build_type) in ("Debug", "RelWithDebInfo")
 
-    def build(self):
-        self._bootstrap_build2()
-
-        b     = self._b_exe()
-        cxx   = self._cxx_exe()
-        jobs  = build_jobs(self)
-        debug = self.settings.build_type in ("Debug", "RelWithDebInfo")
-
-        odb_inc,   odb_lib   = self._dep_dirs("libodb")
+        odb_inc, odb_lib = self._dep_dirs("libodb")
         pgsql_inc, pgsql_lib = self._dep_dirs("libpq")
 
-        args = [
-            f"config.cxx={cxx}",
+        if jobs > 1:
+            args.append(f"-j {jobs}")
+
+        args.extend([
+            f"config.cxx={self._cxx_exe()}",
             "config.cxx.std=c++11",
             f"config.bin.debug={'true' if debug else 'false'}",
             f"config.bin.lib={'shared' if self.options.shared else 'static'}",
@@ -190,37 +221,53 @@ class LibOdbPgsqlConan(ConanFile):
             self._cc_flag("libpath", odb_lib),
             self._cc_flag("libpath", pgsql_lib),
             "config.libodb_pgsql.develop=false",
-        ]
-        if self.options.shared and self.settings.os != "Windows":
+        ])
+
+        if self.options.shared and str(self.settings.os) != "Windows":
             args.append(f"config.bin.rpath={self.package_folder}/lib")
+
         if not self.options.shared and self.options.get_safe("fPIC") and not self._is_msvc():
             args.append("config.cc.coptions+=-fPIC")
-        if jobs > 1:
-            args.insert(0, f"-j {jobs}")
 
-        pgsql_src = os.path.join(self.source_folder, self._pgsql_src)
-        # Build only the library (skip tests)
-        self.run(f'"{b}" ' + " ".join(args) + " ./odb/pgsql/", cwd=pgsql_src)
+        return args
+
+    def build(self):
+        self._bootstrap_build2()
+        args = " ".join(self._build_args())
+        self.run(f'"{self._b_exe()}" {args} ./odb/pgsql/', cwd=self._pgsql_source_dir)
+
+    def _copy_headers(self):
+        src = os.path.join(self._pgsql_source_dir, "odb", "pgsql")
+        dst = os.path.join(self.package_folder, "include", "odb", "pgsql")
+
+        for pattern in ("*.hxx", "*.ixx", "*.txx", "*.h"):
+            copy(self, pattern, src, dst)
+
+    def _copy_libraries(self):
+        lib_dir = os.path.join(self.package_folder, "lib")
+        bin_dir = os.path.join(self.package_folder, "bin")
+
+        if self.options.shared:
+            copy(self, "*.dll", self._pgsql_source_dir, bin_dir, keep_path=False)
+            copy(self, "*.so*", self._pgsql_source_dir, lib_dir, keep_path=False)
+            copy(self, "*.dylib", self._pgsql_source_dir, lib_dir, keep_path=False)
+            copy(self, "*.lib", self._pgsql_source_dir, lib_dir, keep_path=False)
+        else:
+            copy(self, "*.a", self._pgsql_source_dir, lib_dir, keep_path=False)
+            copy(self, "*.lib", self._pgsql_source_dir, lib_dir, keep_path=False)
 
     def package(self):
-        pgsql_src = os.path.join(self.source_folder, self._pgsql_src)
+        self._copy_headers()
+        self._copy_libraries()
 
-        # Headers
-        for pat in ("*.hxx", "*.ixx", "*.txx", "*.h"):
-            copy(self, pat, os.path.join(pgsql_src, "odb", "pgsql"),
-                 os.path.join(self.package_folder, "include", "odb", "pgsql"))
+        copy(
+            self,
+            "LICENSE",
+            self._pgsql_source_dir,
+            os.path.join(self.package_folder, "licenses"),
+            keep_path=False,
+        )
 
-        # Libraries
-        if self.options.shared:
-            copy(self, "*.dll", pgsql_src, os.path.join(self.package_folder, "bin"), keep_path=False)
-            copy(self, "*.so*", pgsql_src, os.path.join(self.package_folder, "lib"), keep_path=False)
-            copy(self, "*.dylib", pgsql_src, os.path.join(self.package_folder, "lib"), keep_path=False)
-            copy(self, "*.lib", pgsql_src, os.path.join(self.package_folder, "lib"), keep_path=False)
-        else:
-            copy(self, "*.lib", pgsql_src, os.path.join(self.package_folder, "lib"), keep_path=False)
-            copy(self, "*.a",   pgsql_src, os.path.join(self.package_folder, "lib"), keep_path=False)
-
-        copy(self, "LICENSE", pgsql_src, os.path.join(self.package_folder, "licenses"))
         rm(self, "*.pdb", self.package_folder, recursive=True)
 
     def package_info(self):
@@ -232,7 +279,9 @@ class LibOdbPgsqlConan(ConanFile):
 
         if not self.options.shared:
             self.cpp_info.defines.append("LIBODB_PGSQL_STATIC")
-        if self.settings.os in ["Linux", "FreeBSD"]:
+
+        if str(self.settings.os) == "Linux":
             self.cpp_info.system_libs.append("pthread")
-        if self.settings.os == "Windows":
+
+        if str(self.settings.os) == "Windows":
             self.cpp_info.system_libs.append("ws2_32")
