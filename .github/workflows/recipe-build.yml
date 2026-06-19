@@ -8,7 +8,7 @@ on:
       - feature/**
 
 jobs:
-  libodb:
+  build-libodb-recipes:
     name: ${{ matrix.target_os }}-${{ matrix.target_arch }} | shared=${{ matrix.shared }}
     runs-on: ${{ matrix.runs_on }}
     strategy:
@@ -75,7 +75,7 @@ jobs:
           cmake --version
           conan --version
 
-      - name: Create recipe on Windows
+      - name: Create recipes on Windows
         if: matrix.target_os == 'windows'
         shell: pwsh
         run: |
@@ -84,11 +84,21 @@ jobs:
             -o "libodb/*:shared=${{ matrix.shared }}" `
             -b missing
 
-      - name: Create recipe on Linux/macOS
+          conan create recipes/libodb-pgsql/all `
+            --version=2.5.0 `
+            -o "libodb-pgsql/*:shared=${{ matrix.shared }}" `
+            -b missing
+
+      - name: Create recipes on Linux/macOS
         if: matrix.target_os != 'windows'
         shell: bash
         run: |
           conan create recipes/libodb/all \
             --version=2.5.0 \
             -o "libodb/*:shared=${{ matrix.shared }}" \
+            -b missing
+
+          conan create recipes/libodb-pgsql/all \
+            --version=2.5.0 \
+            -o "libodb-pgsql/*:shared=${{ matrix.shared }}" \
             -b missing
