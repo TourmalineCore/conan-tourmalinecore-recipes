@@ -80,25 +80,27 @@ jobs:
         shell: pwsh
         run: |
           conan create recipes/libodb/all `
-            --version=2.5.0 `
-            -o "libodb/*:shared=${{ matrix.shared }}" `
-            -b missing
+          --version=2.5.0 `
+          -o "libodb/*:shared=${{ matrix.shared }}" `
+          -b missing
 
           conan create recipes/libodb-pgsql/all `
-            --version=2.5.0 `
-            -o "libodb-pgsql/*:shared=${{ matrix.shared }}" `
-            -b missing
+          --version=2.5.0 `
+          -o "libodb-pgsql/*:shared=${{ matrix.shared }}" `
+          -o "libodb/*:shared=${{ matrix.shared }}" `
+          -b missing
 
       - name: Create recipes on Linux/macOS
         if: matrix.target_os != 'windows'
         shell: bash
         run: |
           conan create recipes/libodb/all \
-            --version=2.5.0 \
-            -o "libodb/*:shared=${{ matrix.shared }}" \
-            -b missing
+          --version=2.5.0 \
+          -o "libodb/*:shared=${{ matrix.shared }}" \
+          -b missing
 
           conan create recipes/libodb-pgsql/all \
-            --version=2.5.0 \
-            -o "libodb-pgsql/*:shared=${{ matrix.shared }}" \
-            -b missing
+          --version=2.5.0 \
+          -o "libodb-pgsql/*:shared=${{ matrix.shared }}" \
+          -o "libodb/*:shared=${{ matrix.shared }}" \
+          -b missing
