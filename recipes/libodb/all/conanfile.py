@@ -3,7 +3,7 @@ import shutil
 import stat
 
 from conan import ConanFile
-from conan.errors import ConanException, ConanInvalidConfiguration
+from conan.errors import ConanInvalidConfiguration
 from conan.tools.build import build_jobs, check_min_cppstd
 from conan.tools.files import copy, get, rm
 from conan.tools.layout import basic_layout
@@ -24,7 +24,6 @@ class LibOdbConan(ConanFile):
     package_type = "library"
 
     settings = "os", "arch", "compiler", "build_type"
-
     options = {
         "shared": [True, False],
         "fPIC": [True, False],
@@ -48,25 +47,21 @@ class LibOdbConan(ConanFile):
             raise ConanInvalidConfiguration(
                 f"{self.ref} supports only Windows, Linux and macOS"
             )
-
         if str(self.settings.arch) not in ("x86_64", "armv8"):
             raise ConanInvalidConfiguration(
                 f"{self.ref} supports only x86_64 and armv8"
             )
-
         if self.settings.get_safe("compiler.cppstd"):
             check_min_cppstd(self, 11)
 
     def source(self):
         src_data = self.conan_data["sources"][self.version]
-
         get(
             self,
             **src_data["libodb"],
             strip_root=True,
             destination=self._odb_source_dir,
         )
-
         get(
             self,
             **src_data["build2_toolchain"],
@@ -82,25 +77,11 @@ class LibOdbConan(ConanFile):
     def _odb_source_dir(self):
         return os.path.join(self.source_folder, self._odb_src)
 
-    @property
-    def _build2_bootstrap_dir(self):
-        return os.path.join(self._build2_source_dir, "build2")
-
-    @property
-    def _build2_bin_source_dir(self):
-        return os.path.join(self._build2_bootstrap_dir, "build2")
-
-    @property
-    def _build2_bin_b_bin_executable_dir(self):
-        return os.path.join(self.source_folder, self._b_bin, "bin")
-
     def _exe_suffix(self):
         return ".exe" if str(self.settings.os) == "Windows" else ""
 
-
     def _b_exe(self):
         return os.path.join(self.source_folder, self._b_bin, "bin", f"b{self._exe_suffix()}")
-
 
     def _cxx_exe(self):
         compiler = str(self.settings.compiler)
@@ -117,40 +98,36 @@ class LibOdbConan(ConanFile):
             return "clang++"
         return "c++"
 
-
     def _is_msvc(self):
         return str(self.settings.compiler) == "msvc"
 
-
-    def _find_first_existing(self, candidates):
+    @staticmethod
+    def _find_first_existing(candidates):
         for path in candidates:
             if os.path.isfile(path):
                 return path
         return None
 
-
     def _make_executable(self, path):
         if str(self.settings.os) != "Windows":
             os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
-
     def _bootstrap_build2(self):
-        b2_src = os.path.join(self.source_folder, self._b2_src)
-        b2_pkg = os.path.join(b2_src, "build2")
+        b2_pkg = os.path.join(self._build2_source_dir, "build2")
         exe_sfx = self._exe_suffix()
         cxx = self._cxx_exe()
 
         if self._is_msvc():
             self.run(f"bootstrap-msvc.bat {cxx} /w", cwd=b2_pkg)
         else:
-            bs = os.path.join(b2_pkg, "bootstrap.sh")
-            self._make_executable(bs)
+            bootstrap = os.path.join(b2_pkg, "bootstrap.sh")
+            self._make_executable(bootstrap)
             self.run(f"./bootstrap.sh {cxx} -w", cwd=b2_pkg)
 
         old_boot = os.path.join(b2_pkg, "build2", f"b-boot{exe_sfx}")
         new_boot = os.path.join(b2_pkg, "b", f"b-boot{exe_sfx}")
-
         b_boot = self._find_first_existing([old_boot, new_boot])
+
         if not b_boot:
             raise ConanInvalidConfiguration(
                 f"Could not find build2 bootstrap executable after phase 1 in {b2_pkg}"
@@ -158,14 +135,10 @@ class LibOdbConan(ConanFile):
 
         if b_boot == new_boot:
             b_target = "b/exe{b}"
-            b_full_candidates = [
-                os.path.join(b2_pkg, "b", f"b{exe_sfx}"),
-            ]
+            b_full_candidates = [os.path.join(b2_pkg, "b", f"b{exe_sfx}")]
         else:
             b_target = "build2/exe{b}"
-            b_full_candidates = [
-                os.path.join(b2_pkg, "build2", f"b{exe_sfx}"),
-            ]
+            b_full_candidates = [os.path.join(b2_pkg, "build2", f"b{exe_sfx}")]
 
         self.output.info(f"Using build2 bootstrap executable: {b_boot}")
         self.output.info(f"Using build2 rebuild target: {b_target}")
@@ -192,20 +165,18 @@ class LibOdbConan(ConanFile):
 
     def _build_args(self):
         args = []
-        jobs = build_jobs(self)
         debug = str(self.settings.build_type) in ("Debug", "RelWithDebInfo")
+        jobs = build_jobs(self)
 
         if jobs > 1:
             args.append(f"-j {jobs}")
 
-        args.extend(
-            [
-                f"config.cxx={self._cxx_exe()}",
-                "config.cxx.std=c++11",
-                f"config.bin.debug={'true' if debug else 'false'}",
-                f"config.bin.lib={'shared' if self.options.shared else 'static'}",
-            ]
-        )
+        args.extend([
+            f"config.cxx={self._cxx_exe()}",
+            "config.cxx.std=c++11",
+            f"config.bin.debug={'true' if debug else 'false'}",
+            f"config.bin.lib={'shared' if self.options.shared else 'static'}",
+        ])
 
         if not self.options.shared and self.options.get_safe("fPIC") and not self._is_msvc():
             args.append("config.cc.coptions+=-fPIC")
@@ -214,14 +185,12 @@ class LibOdbConan(ConanFile):
 
     def build(self):
         self._bootstrap_build2()
-
         args = " ".join(self._build_args())
         self.run(f'"{self._b_exe()}" {args} ./odb/', cwd=self._odb_source_dir)
 
     def _copy_headers(self):
         src = os.path.join(self._odb_source_dir, "odb")
         dst = os.path.join(self.package_folder, "include", "odb")
-
         for pattern in ("*.hxx", "*.ixx", "*.txx", "*.h"):
             copy(self, pattern, src, dst)
 
@@ -241,7 +210,6 @@ class LibOdbConan(ConanFile):
     def package(self):
         self._copy_headers()
         self._copy_libraries()
-
         copy(
             self,
             "LICENSE",
@@ -262,6 +230,5 @@ class LibOdbConan(ConanFile):
 
         if str(self.settings.os) == "Linux":
             self.cpp_info.system_libs.append("pthread")
-
-        if str(self.settings.os) == "Windows":
+        elif str(self.settings.os) == "Windows":
             self.cpp_info.system_libs.append("ws2_32")
